@@ -598,7 +598,7 @@ async def handle_food_photo(message: types.Message):
 # ----------------- ЗАПУСК -----------------
 async def main():
     await start_web_server()
-    scheduler.add_job(lambda: asyncio.create_task(asyncio.to_thread(sync_gymup_task)), CronTrigger(minute=0))
+    
     scheduler.add_job(send_morning_split, CronTrigger(hour=6, minute=0))
     scheduler.add_job(send_casein_reminder, CronTrigger(hour=21, minute=0))
     scheduler.start()
