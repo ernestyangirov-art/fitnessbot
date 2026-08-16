@@ -9,7 +9,13 @@ from datetime import datetime
 from aiohttp import web
 from aiogram import Bot, Dispatcher, F, types
 from aiogram.filters import Command
-from aiogram.types import InlineKeyboardButton, InlineKeyboardMarkup, CallbackQuery
+from aiogram.types import (
+    InlineKeyboardButton,
+    InlineKeyboardMarkup,
+    CallbackQuery,
+    ReplyKeyboardMarkup,
+    KeyboardButton
+)
 from apscheduler.schedulers.asyncio import AsyncIOScheduler
 from apscheduler.triggers.cron import CronTrigger
 from dotenv import load_dotenv
@@ -30,7 +36,7 @@ DRIVE_FOLDER_ID = os.getenv("DRIVE_FOLDER_ID", "1yc53-ADTZZBx9hk-WPepohkEZruBXHs
 
 DAILY_PROTEIN_TARGET = 150   # г
 DAILY_CALORIE_TARGET = 2300  # ккал
-DATA_FILE = "subscribers.json"
+SETTINGS_FILE = "user_settings.json"
 SCOPES = ["https://www.googleapis.com/auth/drive.readonly", "https://www.googleapis.com/auth/spreadsheets"]
 
 if not TELEGRAM_BOT_TOKEN:
@@ -42,6 +48,124 @@ if GEMINI_API_KEY:
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher()
 scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
+
+# ----------------- УПРАВЛЕНИЕ НАСТРОЙКАМИ -----------------
+def load_settings():
+    if os.path.exists(SETTINGS_FILE):
+        try:
+            with open(SETTINGS_FILE, "r", encoding="utf-8") as f:
+                return json.load(f)
+        except Exception:
+            return {}
+    return {}
+
+def save_settings(data):
+    with open(SETTINGS_FILE, "w", encoding="utf-8") as f:
+        json.dump(data, f, ensure_ascii=False, indent=2)
+
+def get_user_config(chat_id):
+    settings = load_settings()
+    cid = str(chat_id)
+    if cid not in settings:
+        settings[cid] = {
+            "morning_notify": True,
+            "casein_notify": True
+        }
+        save_settings(settings)
+    return settings[cid]
+
+def update_user_config(chat_id, key, value):
+    settings = load_settings()
+    cid = str(chat_id)
+    if cid not in settings:
+        settings[cid] = {"morning_notify": True, "casein_notify": True}
+    settings[cid][key] = value
+    save_settings(settings)
+
+# ----------------- БАЗА УПРАЖНЕНИЙ И ТЕХНИКИ -----------------
+SPLIT_PROGRAM = {
+    "day_a": {
+        "title": "День А (Грудь + Плечи + Трицепс)",
+        "exercises": [
+            {
+                "name": "Жим штанги лежа",
+                "sets": "4x8-10 (RIR 1-2)",
+                "setup": "Лопатки сведены и опущены к тазу, жесткий упор стопами в пол, умеренный естественный мост.",
+                "execution": "Опускание подконтрольное (2-3 сек) к нижней линии груди, локти под углом ~70-75° к корпусу, мощный выжим с сохранением лопаток.",
+                "mistake": "Разведение локтей на 90° (перегрузка плечевого сустава), отрыв таза от скамьи."
+            },
+            {
+                "name": "Армейский жим стоя (Overhead Press)",
+                "sets": "3x10-12 (RIR 1-2)",
+                "setup": "Хват чуть шире плеч, ягодицы и пресс зажаты в монолит, нейтральная поясница.",
+                "execution": "Гриф движется строго вертикально, голова слегка отклоняется назад при прохождении грифа, в верхней точке трапеции слегка пожимаются вверх.",
+                "mistake": "Чрезмерный прогиб в пояснице, толчок ногами (если это не швунг)."
+            }
+        ]
+    },
+    "day_b": {
+        "title": "День Б (Спина + Бицепс / Брахиалис)",
+        "exercises": [
+            {
+                "name": "Подтягивания широким/средним хватом",
+                "sets": "4xMax (RIR 0-1)",
+                "setup": "Полный вис внизу с растяжением широчайших, плечи не зажимают уши.",
+                "execution": "Инициация движения опусканием лопаток, тяга локтями к тазу, грудь направлена к перекладине.",
+                "mistake": "Рывки ногами, неполная амплитуда внизу, скругление плеч вперед в верхней точке."
+            },
+            {
+                "name": "Тяга штанги в наклоне",
+                "sets": "4x8-10 (RIR 1-2)",
+                "setup": "Корпус наклонен на 45-60°, колени слегка согнуты, спина идеально ровная, взгляд вперед-вниз.",
+                "execution": "Тяга грифа вдоль бедер к низу живота/паху за счет сведения лопаток и отведения локтей назад.",
+                "mistake": "Подъем корпуса за счет инерции, подтягивание веса к груди бицепсом."
+            },
+            {
+                "name": "Молотковые сгибания с гантелями (Hammer Curls)",
+                "sets": "3x12 (RIR 1)",
+                "setup": "Стоя, нейтральный хват (ладони смотрят друг на друга), локти зафиксированы по бокам корпуса.",
+                "execution": "Подъем без раскачки корпуса, пиковое сокращение в верхней точке на 1 сек, медленное опускание.",
+                "mistake": "Вывод локтей вперед, заброс веса спиной."
+            }
+        ]
+    },
+    "day_c": {
+        "title": "День C (Ноги + Пресс)",
+        "exercises": [
+            {
+                "name": "Приседания со штангой",
+                "sets": "4x10-12 (RIR 1-2)",
+                "setup": "Гриф лежит на трапециях, стопы на ширине плеч с легким разворотом носков наружу, глубокий вдох в живот (Валсальва).",
+                "execution": "Одновременный сгиб в тазобедренных и коленных суставах, колени строго по вектору носков, глубина — параллель или чуть ниже.",
+                "mistake": "Завал коленей внутрь при подъеме, «клевок» тазом в нижней точке."
+            }
+        ]
+    }
+}
+
+# ----------------- КЛАВИАТУРЫ -----------------
+def get_main_keyboard():
+    return ReplyKeyboardMarkup(
+        keyboard=[
+            [KeyboardButton(text="🏋️ Тренировка дня"), KeyboardButton(text="📊 Аналитика")],
+            [KeyboardButton(text="🔄 Синхронизация GymUp"), KeyboardButton(text="⚙️ Настройки")]
+        ],
+        resize_keyboard=True
+    )
+
+def get_settings_keyboard(chat_id):
+    cfg = get_user_config(chat_id)
+    m_status = "✅ Вкл" if cfg.get("morning_notify", True) else "❌ Выкл"
+    c_status = "✅ Вкл" if cfg.get("casein_notify", True) else "❌ Выкл"
+
+    return InlineKeyboardMarkup(
+        inline_keyboard=[
+            [InlineKeyboardButton(text=f"🌅 Утренний сплит (06:00): {m_status}", callback_data="toggle_morning")],
+            [InlineKeyboardButton(text=f"🥛 Казеин (21:00): {c_status}", callback_data="toggle_casein")],
+            [InlineKeyboardButton(text="🔔 Тест утреннего пуша", callback_data="test_morning_push")],
+            [InlineKeyboardButton(text="🔔 Тест казеинового пуша", callback_data="test_casein_push")]
+        ]
+    )
 
 # ----------------- ВЕБ-СЕРВЕР ДЛЯ RENDER -----------------
 async def handle_ping(request):
@@ -57,24 +181,7 @@ async def start_web_server():
     site = web.TCPSite(runner, "0.0.0.0", port)
     await site.start()
 
-# ----------------- БАЗА ПОДПИСЧИКОВ -----------------
-def load_subscribers():
-    if os.path.exists(DATA_FILE):
-        try:
-            with open(DATA_FILE, "r") as f:
-                return set(json.load(f))
-        except Exception:
-            return set()
-    return set()
-
-def save_subscriber(chat_id):
-    subscribers = load_subscribers()
-    if chat_id not in subscribers:
-        subscribers.add(chat_id)
-        with open(DATA_FILE, "w") as f:
-            json.dump(list(subscribers), f)
-
-# ----------------- GOOGLE КЛИЕНТЫ -----------------
+# ----------------- GOOGLE CLIENTS & SYNC -----------------
 def get_gcp_creds():
     creds_json = os.environ.get("GCP_CREDENTIALS")
     if not creds_json:
@@ -86,11 +193,10 @@ def get_gcp_creds():
     except Exception:
         return None
 
-# ----------------- СИНХРОНИЗАЦИЯ GYMUP (.DB -> SHEETS) -----------------
 def sync_gymup_task():
     creds = get_gcp_creds()
     if not creds or not SPREADSHEET_ID or not DRIVE_FOLDER_ID:
-        return "GCP_CREDENTIALS, SPREADSHEET_ID или DRIVE_FOLDER_ID не настроены."
+        return "⚠️ GCP_CREDENTIALS или ID таблицы/папки не настроены."
 
     drive = build("drive", "v3", credentials=creds)
     res = drive.files().list(
@@ -101,7 +207,7 @@ def sync_gymup_task():
     ).execute()
     files = res.get("files", [])
     if not files:
-        return "В папке не найдены файлы .db"
+        return "В папке Google Drive не найден бэкап .db"
 
     req = drive.files().get_media(fileId=files[0]["id"])
     tmp = tempfile.NamedTemporaryFile(delete=False, suffix=".db")
@@ -137,13 +243,76 @@ def sync_gymup_task():
 
         if new_rows:
             sheet.append_rows(new_rows)
-            return f"Добавлено {len(new_rows)} новых подходов из GymUp."
-        return "Все подходы уже синхронизированы."
+            return f"✅ Добавлено {len(new_rows)} новых подходов из бэкапа `{files[0]['name']}`."
+        return f"👌 Все данные актуальны. Новых записей в `{files[0]['name']}` нет."
     finally:
         if os.path.exists(tmp.name):
             os.remove(tmp.name)
 
-# ----------------- ПИТАНИЕ (GOOGLE ТАБЛИЦА) -----------------
+# ----------------- АНАЛИТИКА ТРЕНИРОВОК -----------------
+def get_training_analytics():
+    creds = get_gcp_creds()
+    if not creds or not SPREADSHEET_ID:
+        return "⚠️ Нет доступа к Google Таблице."
+
+    sheet = gspread.authorize(creds).open_by_key(SPREADSHEET_ID).sheet1
+    rows = sheet.get_all_values()
+    if len(rows) <= 1:
+        return "Таблица пуста. Сначала выполните синхронизацию."
+
+    # Находим последнюю дату тренировки
+    last_date = rows[-1][0].split(" ")[0] if " " in rows[-1][0] else rows[-1][0]
+    
+    workout_rows = [r for r in rows[1:] if r[0].startswith(last_date)]
+    if not workout_rows:
+        return "Не удалось определить данные последней тренировки."
+
+    total_tonnage = 0.0
+    exercises_summary = {}
+    
+    for r in workout_rows:
+        ex_name = r[2] if len(r) > 2 else "Упражнение"
+        try:
+            tonnage = float(str(r[6]).replace(",", "."))
+        except (ValueError, IndexError):
+            tonnage = 0.0
+        
+        try:
+            one_pm = float(str(r[7]).replace(",", "."))
+        except (ValueError, IndexError):
+            one_pm = 0.0
+
+        total_tonnage += tonnage
+        if ex_name not in exercises_summary:
+            exercises_summary[ex_name] = {"sets": 0, "max_1pm": 0.0, "max_weight": 0.0}
+        
+        exercises_summary[ex_name]["sets"] += 1
+        exercises_summary[ex_name]["max_1pm"] = max(exercises_summary[ex_name]["max_1pm"], one_pm)
+        try:
+            w = float(str(r[4]).replace(",", "."))
+            exercises_summary[ex_name]["max_weight"] = max(exercises_summary[ex_name]["max_weight"], w)
+        except (ValueError, IndexError):
+            pass
+
+    prog_title = workout_rows[0][1] if len(workout_rows[0]) > 1 and workout_rows[0][1] else "Тренировка"
+
+    text = (
+        f"📊 **Анализ последней тренировки**\n"
+        f"📅 **Дата:** `{last_date}` | **Сплит:** `{prog_title}`\n"
+        f"🏋️ **Общий тоннаж:** `{total_tonnage:,.0f} кг`\n"
+        f"🔢 **Всего рабочих подходов:** `{len(workout_rows)}`\n\n"
+        f"**Детализация по упражнениям:**\n"
+    )
+
+    for ex, data in exercises_summary.items():
+        text += (
+            f"• **{ex}**\n"
+            f"  └ Подходов: `{data['sets']}` | Макс. вес: `{data['max_weight']} кг` | Расч. 1ПМ: `{data['max_1pm']:.1f} кг`\n"
+        )
+
+    return text
+
+# ----------------- ПИТАНИЕ (GOOGLE ТАБЛИЦА & ПРОГРЕСС-БАР) -----------------
 def sync_food_log(dish_name: str, protein: float, calories: float):
     creds = get_gcp_creds()
     if not creds or not SPREADSHEET_ID:
@@ -172,106 +341,227 @@ def sync_food_log(dish_name: str, protein: float, calories: float):
                 continue
     return total_protein, total_calories
 
-def format_food_msg(dish_name, protein, calories, total_p, total_c):
+def render_progress_bar(current, target, length=10):
+    ratio = min(1.0, max(0.0, current / target)) if target > 0 else 0
+    filled = int(ratio * length)
+    bar = "█" * filled + "░" * (length - filled)
+    percent = int(ratio * 100)
+    return f"[{bar}] {percent}%"
+
+def format_food_feedback(dish_name, protein, calories, total_p, total_c):
     left_p = max(0.0, DAILY_PROTEIN_TARGET - total_p)
+    p_bar = render_progress_bar(total_p, DAILY_PROTEIN_TARGET)
+    c_bar = render_progress_bar(total_c, DAILY_CALORIE_TARGET)
+
     return (
-        f"✅ **Питание учтено:**\n"
-        f"🍽️ *{dish_name}* (+{protein:.1f}г белка, +{calories:.0f} ккал)\n\n"
-        f"🥩 **Белок за сегодня:** {total_p:.0f} / {DAILY_PROTEIN_TARGET} г\n"
+        f"✅ **Прием пищи сохранен:**\n"
+        f"🍽️ *{dish_name}*\n"
+        f"➕ `+{protein:.1f} г белка` | `+{calories:.0f} ккал`\n\n"
+        f"🥩 **Белок сегодня:** {total_p:.0f} / {DAILY_PROTEIN_TARGET} г\n"
+        f"   └ `{p_bar}`\n"
         f"🔥 **Калории:** {total_c:.0f} / {DAILY_CALORIE_TARGET} ккал\n"
-        f"⏳ **Осталось добрать:** {left_p:.0f} г белка"
+        f"   └ `{c_bar}`\n\n"
+        f"⏳ **Осталось добрать белка:** `{left_p:.0f} г`"
     )
 
-# ----------------- БАЗА УПРАЖНЕНИЙ -----------------
-SPLIT_PROGRAM = {
-    "day_a": {
-        "title": "День А (Грудь + Плечи + Трицепс)",
-        "exercises": [
-            {"name": "Жим лежа", "sets": "4x8-10", "cue": "Сведение лопаток, мост, угол локтей ~75°.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/Barbell-Bench-Press.gif"},
-            {"name": "Армейский жим стоя", "sets": "3x10-12", "cue": "Пресс зажат, гриф до верха груди.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/Overhead-Press.gif"}
-        ]
-    },
-    "day_b": {
-        "title": "День Б (Спина + Бицепс)",
-        "exercises": [
-            {"name": "Подтягивания", "sets": "4xMax", "cue": "Тяга локтями к тазу, контроль внизу.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/Pull-up.gif"},
-            {"name": "Тяга штанги в наклоне", "sets": "4x8-10", "cue": "Корпус 45°, тяга к поясу.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/Barbell-Bent-Over-Row.gif"},
-            {"name": "Молотковые сгибания", "sets": "3x12", "cue": "Нейтральный хват, локти прижаты.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/Hammer-Curls.gif"}
-        ]
-    },
-    "day_c": {
-        "title": "День C (Ноги)",
-        "exercises": [
-            {"name": "Приседания", "sets": "4x10-12", "cue": "Колени по направлению носков.", "gif": "https://fitnessprogramer.com/wp-content/uploads/2021/02/BARBELL-SQUAT.gif"}
-        ]
-    }
-}
-
-# ----------------- ХЕНДЛЕРЫ -----------------
-@dp.message(Command("start"))
-async def cmd_start(message: types.Message):
-    save_subscriber(message.chat.id)
-    await message.answer(
-        "👋 **Бот активен!**\n\n"
-        "🥗 **Питание:** отправьте текст, фото блюда или голосовое.\n"
-        "🏋️ **Тренировки:** `/workout` — план с техникой и GIF.\n"
-        "🔄 **Синхронизация:** `/sync` — вручную загрузить тренировки из GymUp."
-    )
-
-@dp.message(Command("sync"))
-async def cmd_sync(message: types.Message):
-    msg = await message.answer("⏳ Проверяю бэкапы GymUp на Google Drive...")
-    res = await asyncio.to_thread(sync_gymup_task)
-    await msg.edit_text(f"🔄 **Результат синхронизации:**\n{res}")
-
-@dp.message(Command("workout"))
-async def cmd_workout(message: types.Message):
+# ----------------- НАПОМИНАНИЯ (SCHEDULER) -----------------
+async def send_morning_split():
+    settings = load_settings()
     day_key = ["day_a", "day_b", "day_c"][datetime.now().day % 3]
     split = SPLIT_PROGRAM[day_key]
-    await message.answer(f"📋 **План: {split['title']}**")
-    for ex in split["exercises"]:
-        try:
-            await message.answer_animation(animation=ex["gif"], caption=f"🏋️ {ex['name']}\n📊 {ex['sets']}\n💡 {ex['cue']}")
-        except Exception:
-            await message.answer(f"🏋️ {ex['name']}\n📊 {ex['sets']}\n💡 {ex['cue']}")
 
+    msg = (
+        f"🌅 **Утренняя сводка тренировок**\n\n"
+        f"🎯 Сегодня по плану: **{split['title']}**\n"
+        f"🥩 Суточная цель по белку: **{DAILY_PROTEIN_TARGET} г**\n\n"
+        f"Нажмите кнопку *«🏋️ Тренировка дня»* для изучения биомеханики упражнений."
+    )
+
+    for cid, cfg in settings.items():
+        if cfg.get("morning_notify", True):
+            try:
+                await bot.send_message(chat_id=int(cid), text=msg, parse_mode="Markdown")
+            except Exception:
+                pass
+
+async def send_casein_reminder():
+    settings = load_settings()
+    msg = (
+        f"🥛 **21:00 — Вечерний чек-ин!**\n\n"
+        f"Время закрыть суточную норму белка казеином перед сном для защиты мышц от ночного катаболизма."
+    )
+
+    for cid, cfg in settings.items():
+        if cfg.get("casein_notify", True):
+            try:
+                await bot.send_message(chat_id=int(cid), text=msg, parse_mode="Markdown")
+            except Exception:
+                pass
+
+# ----------------- ОБРАБОТКА КОМАНД И КНОПОК -----------------
+@dp.message(Command("start"))
+async def cmd_start(message: types.Message):
+    get_user_config(message.chat.id)
+    await message.answer(
+        "👋 **Добро пожаловать в персональный фитнес-центр!**\n\n"
+        "🥗 **Питание:** отправьте фото еды, надиктуйте голосом или напишите текстом.\n"
+        "🏋️ **Тренировки:** используйте нижнее меню для просмотра техники и аналитики.",
+        reply_markup=get_main_keyboard(),
+        parse_mode="Markdown"
+    )
+
+@dp.message(F.text == "🏋️ Тренировка дня")
+@dp.message(Command("workout"))
+async def show_workout(message: types.Message):
+    day_key = ["day_a", "day_b", "day_c"][datetime.now().day % 3]
+    split = SPLIT_PROGRAM[day_key]
+
+    await message.answer(f"📋 **ПЛАН: {split['title']}**\n" + "—" * 20, parse_mode="Markdown")
+
+    for ex in split["exercises"]:
+        card = (
+            f"🏋️ **{ex['name']}**\n"
+            f"📊 **Схема:** `{ex['sets']}`\n\n"
+            f"📐 **Исходное положение & Настройка:**\n{ex['setup']}\n\n"
+            f"🎯 **Биомеханика выполнения:**\n{ex['execution']}\n\n"
+            f"⚠️ **Частая ошибка:**\n{ex['mistake']}"
+        )
+        await message.answer(card, parse_mode="Markdown")
+
+@dp.message(F.text == "📊 Аналитика")
+@dp.message(Command("analytics"))
+async def show_analytics(message: types.Message):
+    status_msg = await message.answer("🔄 Считаю тоннаж и 1ПМ из Google Таблицы...")
+    res = await asyncio.to_thread(get_training_analytics)
+    await status_msg.edit_text(res, parse_mode="Markdown")
+
+@dp.message(F.text == "🔄 Синхронизация GymUp")
+@dp.message(Command("sync"))
+async def handle_sync_btn(message: types.Message):
+    status_msg = await message.answer("⏳ Скачиваю свежий бэкап из Google Drive...")
+    res = await asyncio.to_thread(sync_gymup_task)
+    await status_msg.edit_text(f"🔄 **Статус:**\n{res}", parse_mode="Markdown")
+
+@dp.message(F.text == "⚙️ Настройки")
+@dp.message(Command("settings"))
+async def show_settings(message: types.Message):
+    await message.answer(
+        "⚙️ **Управление уведомлениями бота:**",
+        reply_markup=get_settings_keyboard(message.chat.id),
+        parse_mode="Markdown"
+    )
+
+@dp.callback_query(F.data.startswith("toggle_"))
+async def handle_toggle(cb: CallbackQuery):
+    cfg = get_user_config(cb.message.chat.id)
+    if cb.data == "toggle_morning":
+        update_user_config(cb.message.chat.id, "morning_notify", not cfg.get("morning_notify", True))
+    elif cb.data == "toggle_casein":
+        update_user_config(cb.message.chat.id, "casein_notify", not cfg.get("casein_notify", True))
+    
+    await cb.message.edit_reply_markup(reply_markup=get_settings_keyboard(cb.message.chat.id))
+    await cb.answer("Настройки обновлены!")
+
+@dp.callback_query(F.data.startswith("test_"))
+async def handle_test_pushes(cb: CallbackQuery):
+    if cb.data == "test_morning_push":
+        await send_morning_split()
+    elif cb.data == "test_casein_push":
+        await send_casein_reminder()
+    await cb.answer("Тестовое уведомление отправлено!")
+
+# ----------------- ПИТАНИЕ: ТЕКСТ / ГОЛОС / ФОТО -----------------
 @dp.message(F.text & ~F.text.startswith("/"))
 async def handle_food_text(message: types.Message):
-    save_subscriber(message.chat.id)
-    msg = await message.answer("🔄 Считаю КБЖУ...")
+    if message.text in ["🏋️ Тренировка дня", "📊 Аналитика", "🔄 Синхронизация GymUp", "⚙️ Настройки"]:
+        return
+
+    status_msg = await message.answer("🔄 Анализирую состав...")
     try:
         model = genai.GenerativeModel("gemini-1.5-flash")
-        resp = await asyncio.to_thread(model.generate_content, f"Рассчитай БЖУ: '{message.text}'. JSON: {{'dish_name': '...', 'protein': 0.0, 'calories': 0.0}}")
-        data = json.loads(resp.text.replace("```json", "").replace("```", "").strip())
-        dish, p, c = data.get("dish_name", message.text), float(data.get("protein", 0)), float(data.get("calories", 0))
+        prompt = (
+            f"Рассчитай БЖУ продукта/блюда: '{message.text}'. "
+            'Ответь ТОЛЬКО валидным JSON: {"dish_name": "текст", "protein": число_грамм, "calories": число_ккал}'
+        )
+        resp = await asyncio.to_thread(model.generate_content, prompt)
+        clean = resp.text.strip().replace("```json", "").replace("```", "")
+        data = json.loads(clean)
+
+        dish = data.get("dish_name", message.text)
+        p = float(data.get("protein", 0))
+        c = float(data.get("calories", 0))
+
         tot_p, tot_c = await asyncio.to_thread(sync_food_log, dish, p, c)
-        await msg.edit_text(format_food_msg(dish, p, c, tot_p, tot_c), parse_mode="Markdown")
-    except Exception as e:
-        await msg.edit_text("⚠️ Ошибка обработки текста.")
+        await status_msg.edit_text(format_food_feedback(dish, p, c, tot_p, tot_c), parse_mode="Markdown")
+    except Exception:
+        await status_msg.edit_text("⚠️ Не удалось определить КБЖУ. Пример: `200г куриного филе и 50г риса`")
+
+@dp.message(F.voice)
+async def handle_food_voice(message: types.Message):
+    status_msg = await message.answer("🎙️ Распознаю голос и считаю БЖУ...")
+    try:
+        voice_file = io.BytesIO()
+        await bot.download(message.voice, destination=voice_file)
+        voice_bytes = voice_file.getvalue()
+
+        model = genai.GenerativeModel("gemini-1.5-flash")
+        prompt = (
+            "Послушай аудиозапись, определи продукты и их граммовки. "
+            'Ответь ТОЛЬКО валидным JSON: {"dish_name": "название", "protein": число_грамм, "calories": число_ккал}'
+        )
+        resp = await asyncio.to_thread(
+            model.generate_content,
+            [{"mime_type": "audio/ogg", "data": voice_bytes}, prompt]
+        )
+        clean = resp.text.strip().replace("```json", "").replace("```", "")
+        data = json.loads(clean)
+
+        dish = data.get("dish_name", "Голосовой ввод")
+        p = float(data.get("protein", 0))
+        c = float(data.get("calories", 0))
+
+        tot_p, tot_c = await asyncio.to_thread(sync_food_log, dish, p, c)
+        await status_msg.edit_text(format_food_feedback(dish, p, c, tot_p, tot_c), parse_mode="Markdown")
+    except Exception:
+        await status_msg.edit_text("⚠️ Не удалось разобрать голосовое сообщение.")
 
 @dp.message(F.photo)
 async def handle_food_photo(message: types.Message):
-    save_subscriber(message.chat.id)
-    msg = await message.answer("🔍 Распознаю фото...")
+    status_msg = await message.answer("🔍 Распознаю блюдо на фото...")
     try:
         photo_bytes = io.BytesIO()
         await bot.download(message.photo[-1], destination=photo_bytes)
         img = Image.open(photo_bytes)
+
         model = genai.GenerativeModel("gemini-1.5-flash")
-        resp = await asyncio.to_thread(model.generate_content, ["Определи блюдо и посчитай КБЖУ. Ответ JSON: {'dish_name': '...', 'protein': 0.0, 'calories': 0.0}", img])
-        data = json.loads(resp.text.replace("```json", "").replace("```", "").strip())
-        dish, p, c = data.get("dish_name", "Блюдо по фото"), float(data.get("protein", 0)), float(data.get("calories", 0))
+        prompt = (
+            "Определи блюдо/продукт на фото и оцени его КБЖУ. "
+            'Ответь ТОЛЬКО валидным JSON: {"dish_name": "название", "protein": число_грамм, "calories": число_ккал}'
+        )
+        resp = await asyncio.to_thread(model.generate_content, [prompt, img])
+        clean = resp.text.strip().replace("```json", "").replace("```", "")
+        data = json.loads(clean)
+
+        dish = data.get("dish_name", "Блюдо по фото")
+        p = float(data.get("protein", 0))
+        c = float(data.get("calories", 0))
+
         tot_p, tot_c = await asyncio.to_thread(sync_food_log, dish, p, c)
-        await msg.edit_text(format_food_msg(dish, p, c, tot_p, tot_c), parse_mode="Markdown")
-    except Exception as e:
-        await msg.edit_text("⚠️ Ошибка распознавания фото.")
+        await status_msg.edit_text(format_food_feedback(dish, p, c, tot_p, tot_c), parse_mode="Markdown")
+    except Exception:
+        await status_msg.edit_text("⚠️ Не удалось распознать фото.")
 
 # ----------------- ЗАПУСК -----------------
 async def main():
     await start_web_server()
     # Авто-синхронизация GymUp каждый час
     scheduler.add_job(lambda: asyncio.create_task(asyncio.to_thread(sync_gymup_task)), CronTrigger(minute=0))
+    # Плановые уведомления
+    scheduler.add_job(send_morning_split, CronTrigger(hour=6, minute=0))
+    scheduler.add_job(send_casein_reminder, CronTrigger(hour=21, minute=0))
     scheduler.start()
+    
+    print("Бот запущен с полным функционалом!")
     await dp.start_polling(bot)
 
 if __name__ == "__main__":
