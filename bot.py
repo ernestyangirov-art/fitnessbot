@@ -20,7 +20,6 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from aiohttp import web
-
 from PIL import Image
 
 import analytics
@@ -231,10 +230,13 @@ async def send_casein_reminder():
             except Exception:
                 pass
 
+
 CRON_JOBS = {
     "morning": send_morning_split,
     "casein": send_casein_reminder,
 }
+
+
 # ----------------- ОБЩИЕ ХЕНДЛЕРЫ -----------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -517,5 +519,8 @@ async def handle_food_photo(message: types.Message):
 async def main():
     await start_web_server()
     print("Бот готов к работе!")
-
     await dp.start_polling(bot)
+
+
+if __name__ == "__main__":
+    asyncio.run(main())
