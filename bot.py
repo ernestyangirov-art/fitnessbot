@@ -25,8 +25,10 @@ from PIL import Image
 import analytics
 import food
 import weight
-from core import (DAILY_PROTEIN_TARGET, TELEGRAM_BOT_TOKEN, ask_gemini_json,
-                  get_user_config, load_settings, num, update_user_config)
+from core import (CALORIE_TARGET_RANGE, DAILY_CALORIE_TARGET,
+                  DAILY_PROTEIN_TARGET, PROTEIN_TARGET_RANGE,
+                  TELEGRAM_BOT_TOKEN, ask_gemini_json, get_user_config,
+                  load_settings, num, update_user_config)
 from google.genai import types as genai_types
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
@@ -43,6 +45,17 @@ class EditWeight(StatesGroup):
 
 class BodyWeight(StatesGroup):
     waiting = State()
+
+
+class EditMealField(StatesGroup):
+    waiting = State()
+
+
+class EditTarget(StatesGroup):
+    waiting = State()
+
+
+FIELD_LABELS = food.EDITABLE_FIELDS
 
 
 # ----------------- КАРТОЧКИ УПРАЖНЕНИЙ -----------------
@@ -135,11 +148,19 @@ DIARY_KEYBOARD = InlineKeyboardMarkup(inline_keyboard=[
 ])
 
 
+TARGET_FIELDS = {
+    "settings:protein": ("daily_protein_target", PROTEIN_TARGET_RANGE, "белку", "г"),
+    "settings:calories": ("daily_calorie_target", CALORIE_TARGET_RANGE, "калориям", "ккал"),
+}
+
+
 def get_settings_keyboard(chat_id):
     cfg = get_user_config(chat_id)
     m_status = "✅ Вкл" if cfg.get("morning_notify", True) else "❌ Выкл"
     c_status = "✅ Вкл" if cfg.get("casein_notify", True) else "❌ Выкл"
     w_status = "✅ Вкл" if cfg.get("weight_notify", True) else "❌ Выкл"
+    protein = cfg.get("daily_protein_target", DAILY_PROTEIN_TARGET)
+    calories = cfg.get("daily_calorie_target", DAILY_CALORIE_TARGET)
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🌅 Утренний сплит (06:00): {m_status}",
                               callback_data="toggle_morning")],
@@ -147,6 +168,10 @@ def get_settings_keyboard(chat_id):
                               callback_data="toggle_casein")],
         [InlineKeyboardButton(text=f"⚖️ Напоминание о взвешивании: {w_status}",
                               callback_data="toggle_weight")],
+        [InlineKeyboardButton(text=f"🥩 Цель по белку: {protein:g} г",
+                              callback_data="settings:protein")],
+        [InlineKeyboardButton(text=f"🔥 Цель по калориям: {calories:g}",
+                              callback_data="settings:calories")],
         [InlineKeyboardButton(text="🔔 Тест утреннего пуша",
                               callback_data="test_morning_push")],
         [InlineKeyboardButton(text="🔔 Тест казеинового пуша",
@@ -162,11 +187,20 @@ def meal_keyboard(meal_id, weight_known=True):
             InlineKeyboardButton(text="+50 г", callback_data=f"meal:w+:{meal_id}"),
             InlineKeyboardButton(text="✏️ Вес", callback_data=f"meal:wset:{meal_id}"),
         ])
+    rows.append([InlineKeyboardButton(text="✏️ Правка БЖУ",
+                                      callback_data=f"meal:editmenu:{meal_id}")])
     rows.append([
         InlineKeyboardButton(text="⭐ В избранное", callback_data=f"meal:fav:{meal_id}"),
         InlineKeyboardButton(text="🗑 Удалить", callback_data=f"meal:del:{meal_id}"),
     ])
     return InlineKeyboardMarkup(inline_keyboard=rows)
+
+
+def field_picker_keyboard(meal_id):
+    return InlineKeyboardMarkup(inline_keyboard=[
+        [InlineKeyboardButton(text=label, callback_data=f"meal:setfield:{meal_id}:{key}")]
+        for key, label in FIELD_LABELS.items()
+    ])
 
 
 def favourites_keyboard(favs):
@@ -214,14 +248,15 @@ async def start_web_server():
 async def send_morning_split():
     settings = await asyncio.to_thread(load_settings, True)
     split = SPLIT_PROGRAM[["day_a", "day_b", "day_c"][datetime.now().day % 3]]
-    msg = (
-        f"🌅 <b>Утренняя сводка</b>\n\n"
-        f"🎯 Сегодня по плану: <b>{html.escape(split['title'])}</b>\n"
-        f"🥩 Цель по белку: <b>{DAILY_PROTEIN_TARGET} г</b>\n\n"
-        f"Нажми «🏋️ Тренировка дня» для карточек с биомеханикой."
-    )
     for cid, cfg in settings.items():
         if cfg.get("morning_notify", True):
+            protein = cfg.get("daily_protein_target", DAILY_PROTEIN_TARGET)
+            msg = (
+                f"🌅 <b>Утренняя сводка</b>\n\n"
+                f"🎯 Сегодня по плану: <b>{html.escape(split['title'])}</b>\n"
+                f"🥩 Цель по белку: <b>{protein:g} г</b>\n\n"
+                f"Нажми «🏋️ Тренировка дня» для карточек с биомеханикой."
+            )
             try:
                 await bot.send_message(chat_id=int(cid), text=msg, parse_mode="HTML")
             except Exception:
@@ -347,6 +382,16 @@ async def handle_toggle(cb: CallbackQuery):
     await cb.answer("Обновлено")
 
 
+@dp.callback_query(F.data.in_(list(TARGET_FIELDS)))
+async def handle_target_pick(cb: CallbackQuery, state: FSMContext):
+    key, rng, label, unit = TARGET_FIELDS[cb.data]
+    await state.set_state(EditTarget.waiting)
+    await state.update_data(key=key, low=rng[0], high=rng[1], unit=unit)
+    await cb.message.answer(
+        f"Новая цель по {label}: число {rng[0]}–{rng[1]} {unit}. Отмена — /cancel")
+    await cb.answer()
+
+
 @dp.callback_query(F.data.startswith("test_"))
 async def handle_test_pushes(cb: CallbackQuery):
     if cb.data == "test_morning_push":
@@ -357,10 +402,16 @@ async def handle_test_pushes(cb: CallbackQuery):
 
 
 # ----------------- ДНЕВНИК ЕДЫ -----------------
+async def user_targets(chat_id):
+    cfg = await asyncio.to_thread(get_user_config, chat_id)
+    return {"protein": cfg["daily_protein_target"], "calories": cfg["daily_calorie_target"]}
+
+
 async def send_meal_card(target, row, edit=False):
     """Показывает карточку приёма пищи: новым сообщением или правкой текущего."""
     rows = await asyncio.to_thread(food.read_meals)
-    text = food.format_meal_card(row, food.totals(food.today_meals(rows)))
+    targets = await user_targets(target.chat.id)
+    text = food.format_meal_card(row, food.totals(food.today_meals(rows)), targets)
     markup = meal_keyboard(row[food.M_ID], weight_known=num(row[food.M_WEIGHT]) > 0)
     if edit:
         await target.edit_text(text, parse_mode="HTML", reply_markup=markup)
@@ -396,11 +447,13 @@ async def handle_diary(cb: CallbackQuery):
 
     if action == "today":
         rows = await asyncio.to_thread(food.read_meals)
-        await cb.message.answer(food.format_day(food.today_meals(rows)),
+        targets = await user_targets(cb.message.chat.id)
+        await cb.message.answer(food.format_day(food.today_meals(rows), targets),
                                 parse_mode="HTML")
     elif action == "week":
         rows = await asyncio.to_thread(food.read_meals)
-        await cb.message.answer(food.format_week(rows), parse_mode="HTML")
+        targets = await user_targets(cb.message.chat.id)
+        await cb.message.answer(food.format_week(rows, targets), parse_mode="HTML")
     elif action == "fav":
         favs = await asyncio.to_thread(food.read_favourites)
         await cb.message.answer(
@@ -425,7 +478,23 @@ async def handle_fav_log(cb: CallbackQuery):
 
 @dp.callback_query(F.data.startswith("meal:"))
 async def handle_meal(cb: CallbackQuery, state: FSMContext):
-    _, action, meal_id = cb.data.split(":", 2)
+    parts = cb.data.split(":")
+    action, meal_id = parts[1], parts[2]
+
+    if action == "editmenu":
+        await cb.message.answer("Что поправить?", reply_markup=field_picker_keyboard(meal_id))
+        await cb.answer()
+        return
+
+    if action == "setfield":
+        field_key = parts[3]
+        await state.set_state(EditMealField.waiting)
+        await state.update_data(meal_id=meal_id, field_key=field_key)
+        hint = "текст" if field_key == "dish" else "число"
+        await cb.message.answer(
+            f"Новое значение «{FIELD_LABELS[field_key]}» ({hint}). Отмена — /cancel")
+        await cb.answer()
+        return
 
     if action == "del":
         ok = await asyncio.to_thread(food.delete_meal, meal_id)
@@ -487,6 +556,58 @@ async def set_weight(message: types.Message, state: FSMContext):
         await message.answer("Не удалось пересчитать — запись не найдена.")
         return
     await send_meal_card(message, updated)
+
+
+@dp.message(Command("cancel"), StateFilter(EditMealField.waiting))
+async def cancel_meal_field(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@dp.message(StateFilter(EditMealField.waiting))
+async def set_meal_field(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    field_key = data.get("field_key")
+    text = (message.text or "").strip()
+
+    if field_key == "dish":
+        if not text:
+            await message.answer("Название не может быть пустым.")
+            return
+        value = text
+    else:
+        value = num(text.replace("г", "").replace("ккал", ""))
+        if value < 0:
+            await message.answer("Нужно число ≥ 0.")
+            return
+
+    await state.clear()
+    updated = await asyncio.to_thread(food.edit_meal_field, data.get("meal_id"),
+                                      field_key, value)
+    if not updated:
+        await message.answer("Не удалось сохранить — запись не найдена.")
+        return
+    await send_meal_card(message, updated)
+
+
+@dp.message(Command("cancel"), StateFilter(EditTarget.waiting))
+async def cancel_target(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@dp.message(StateFilter(EditTarget.waiting))
+async def set_target(message: types.Message, state: FSMContext):
+    data = await state.get_data()
+    value = num((message.text or "").replace(",", "."))
+    if not (data["low"] <= value <= data["high"]):
+        await message.answer(f"Нужно число {data['low']}–{data['high']} {data['unit']}.")
+        return
+
+    await state.clear()
+    await asyncio.to_thread(update_user_config, message.chat.id, data["key"], round(value))
+    keyboard = await asyncio.to_thread(get_settings_keyboard, message.chat.id)
+    await message.answer("Обновлено.", parse_mode="HTML", reply_markup=keyboard)
 
 
 # ----------------- ВЕС ТЕЛА -----------------

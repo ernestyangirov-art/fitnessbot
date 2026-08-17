@@ -5,12 +5,34 @@ import html
 from datetime import datetime
 
 from core import (ANALYSIS_SHEET, TRAINING_SHEET, ask_gemini_text, bar, cut,
-                  num, open_sheet)
+                  header_index, num, open_sheet)
 
-# Колонки листа «Тренировки»
-COL_DATE, COL_SPLIT, COL_EXERCISE, COL_EX_ID = 1, 3, 4, 5
-COL_WEIGHT, COL_REPS = 7, 8
-COL_VOLUME, COL_ORM, COL_HARD = 9, 11, 12
+# Колонки листа «Тренировки» — резолвятся по заголовку в read_training_rows(),
+# не хардкодятся индексом. Лист пишет sync_gymup.py (gymup-sync), бот его
+# никогда не создаёт и не правит — только требует ровно эти заголовки,
+# перестановка/пропажа колонки там падает явной ошибкой, а не читает не то.
+TRAINING_HEADERS = [
+    "Дата и время", "Сплит", "Упражнение", "ex_id", "Вес (кг)", "Повторы",
+    "Тоннаж внешний (кг)", "Расчётный 1ПМ (кг)", "Тяжесть (1-5)",
+]
+COL_DATE = COL_SPLIT = COL_EXERCISE = COL_EX_ID = None
+COL_WEIGHT = COL_REPS = None
+COL_VOLUME = COL_ORM = COL_HARD = None
+
+
+def _resolve_training_columns(header_row):
+    global COL_DATE, COL_SPLIT, COL_EXERCISE, COL_EX_ID
+    global COL_WEIGHT, COL_REPS, COL_VOLUME, COL_ORM, COL_HARD
+    idx = header_index(header_row, TRAINING_HEADERS, TRAINING_SHEET)
+    COL_DATE = idx["Дата и время"]
+    COL_SPLIT = idx["Сплит"]
+    COL_EXERCISE = idx["Упражнение"]
+    COL_EX_ID = idx["ex_id"]
+    COL_WEIGHT = idx["Вес (кг)"]
+    COL_REPS = idx["Повторы"]
+    COL_VOLUME = idx["Тоннаж внешний (кг)"]
+    COL_ORM = idx["Расчётный 1ПМ (кг)"]
+    COL_HARD = idx["Тяжесть (1-5)"]
 
 # Паттерн движения по id упражнения (коды мышц GymUp + ручные правки).
 EXERCISE_PATTERNS = {
@@ -278,10 +300,22 @@ ANALYSIS_PROMPT = """Ты тренер-методист с научным под
 {facts}"""
 
 ANALYSIS_HEADERS = ["Ключ сессии", "Разбор", "Сгенерирован"]
+A_KEY = A_TEXT = A_GEN = None
+
+
+def _resolve_analysis_columns(header_row):
+    global A_KEY, A_TEXT, A_GEN
+    idx = header_index(header_row, ANALYSIS_HEADERS, ANALYSIS_SHEET)
+    A_KEY = idx["Ключ сессии"]
+    A_TEXT = idx["Разбор"]
+    A_GEN = idx["Сгенерирован"]
 
 
 def analysis_sheet():
-    return open_sheet(ANALYSIS_SHEET, ANALYSIS_HEADERS, cols=3)
+    ws = open_sheet(ANALYSIS_SHEET, ANALYSIS_HEADERS, cols=len(ANALYSIS_HEADERS))
+    if ws:
+        _resolve_analysis_columns(ws.row_values(1))
+    return ws
 
 
 def get_cached_analysis(session_key):
@@ -290,8 +324,8 @@ def get_cached_analysis(session_key):
         return None
     try:
         for row in ws.get_all_values()[1:]:
-            if row and row[0] == session_key and len(row) > 1 and row[1]:
-                return row[1]
+            if row and row[A_KEY] == session_key and len(row) > A_TEXT and row[A_TEXT]:
+                return row[A_TEXT]
     except Exception:
         pass
     return None
@@ -337,4 +371,7 @@ def read_training_rows():
         rows = ws.get_all_values()
     except Exception:
         return None
+    if not rows:
+        return []
+    _resolve_training_columns(rows[0])
     return rows[1:] if len(rows) > 1 else []

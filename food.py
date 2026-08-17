@@ -5,20 +5,58 @@ import html
 from datetime import datetime
 
 from core import (DAILY_CALORIE_TARGET, DAILY_PROTEIN_TARGET, FAV_SHEET,
-                  FOOD_SHEET, cut, num, open_sheet, progress_bar)
+                  FOOD_SHEET, col_letter, cut, header_index, num, open_sheet,
+                  progress_bar)
 
 FOOD_HEADERS = [
     "meal_id", "Дата и время", "Блюдо", "Вес порции (г)", "Ингредиенты",
     "Белки (г)", "Жиры (г)", "Углеводы (г)", "Клетчатка (г)", "Калории",
-    "Источник",
+    "Источник", "Ручные поля",
 ]
 FAV_HEADERS = ["fav_id", "Блюдо", "Вес порции (г)", "Ингредиенты",
                "Белки (г)", "Жиры (г)", "Углеводы (г)", "Клетчатка (г)",
                "Калории", "Использований"]
 
-# Колонки листа «Питание»
-M_ID, M_DATE, M_DISH, M_WEIGHT, M_INGR = 0, 1, 2, 3, 4
-M_PROT, M_FAT, M_CARB, M_FIBER, M_KCAL, M_SRC = 5, 6, 7, 8, 9, 10
+# Колонки листов «Питание» и «Избранное» — резолвятся по заголовку при
+# каждом food_sheet()/fav_sheet() (оба листа бот создаёт и пишет сам, они
+# всегда открываются раньше, чем M_*/F_* где-то читаются).
+M_ID = M_DATE = M_DISH = M_WEIGHT = M_INGR = None
+M_PROT = M_FAT = M_CARB = M_FIBER = M_KCAL = M_SRC = M_MANUAL = None
+F_ID = F_DISH = F_WEIGHT = F_INGR = None
+F_PROT = F_FAT = F_CARB = F_FIBER = F_KCAL = F_USED = None
+
+
+def _resolve_food_columns(header_row):
+    global M_ID, M_DATE, M_DISH, M_WEIGHT, M_INGR
+    global M_PROT, M_FAT, M_CARB, M_FIBER, M_KCAL, M_SRC, M_MANUAL
+    idx = header_index(header_row, FOOD_HEADERS, FOOD_SHEET)
+    M_ID = idx["meal_id"]
+    M_DATE = idx["Дата и время"]
+    M_DISH = idx["Блюдо"]
+    M_WEIGHT = idx["Вес порции (г)"]
+    M_INGR = idx["Ингредиенты"]
+    M_PROT = idx["Белки (г)"]
+    M_FAT = idx["Жиры (г)"]
+    M_CARB = idx["Углеводы (г)"]
+    M_FIBER = idx["Клетчатка (г)"]
+    M_KCAL = idx["Калории"]
+    M_SRC = idx["Источник"]
+    M_MANUAL = idx["Ручные поля"]
+
+
+def _resolve_fav_columns(header_row):
+    global F_ID, F_DISH, F_WEIGHT, F_INGR, F_PROT, F_FAT, F_CARB, F_FIBER, F_KCAL, F_USED
+    idx = header_index(header_row, FAV_HEADERS, FAV_SHEET)
+    F_ID = idx["fav_id"]
+    F_DISH = idx["Блюдо"]
+    F_WEIGHT = idx["Вес порции (г)"]
+    F_INGR = idx["Ингредиенты"]
+    F_PROT = idx["Белки (г)"]
+    F_FAT = idx["Жиры (г)"]
+    F_CARB = idx["Углеводы (г)"]
+    F_FIBER = idx["Клетчатка (г)"]
+    F_KCAL = idx["Калории"]
+    F_USED = idx["Использований"]
 
 # Сколько раз блюдо должно повториться, чтобы уехать в избранное само
 FAV_AUTO_AFTER = 3
@@ -34,11 +72,17 @@ FOOD_JSON_SPEC = (
 
 # ----------------- ДОСТУП К ЛИСТАМ -----------------
 def food_sheet():
-    return open_sheet(FOOD_SHEET, FOOD_HEADERS, cols=len(FOOD_HEADERS))
+    ws = open_sheet(FOOD_SHEET, FOOD_HEADERS, cols=len(FOOD_HEADERS))
+    if ws:
+        _resolve_food_columns(ws.row_values(1))
+    return ws
 
 
 def fav_sheet():
-    return open_sheet(FAV_SHEET, FAV_HEADERS, cols=len(FAV_HEADERS))
+    ws = open_sheet(FAV_SHEET, FAV_HEADERS, cols=len(FAV_HEADERS))
+    if ws:
+        _resolve_fav_columns(ws.row_values(1))
+    return ws
 
 
 def new_meal_id():
@@ -73,6 +117,7 @@ def meal_from_data(data, source):
         round(num(data.get("fiber")), 1),
         round(num(data.get("calories"))),
         source,
+        "",  # Ручные поля — пусто, пока ничего не редактировали вручную
     ]
 
 
@@ -119,8 +164,17 @@ def find_meal(meal_id):
     return None, None
 
 
+def _manual_fields(row):
+    """Поля записи, отредактированные вручную (см. edit_meal_field) —
+    их не трогает пропорциональный пересчёт по весу."""
+    return set(f for f in str(row[M_MANUAL]).split(",") if f) if len(row) > M_MANUAL else set()
+
+
 def rescale_meal(meal_id, new_weight):
-    """Пересчитывает нутриенты пропорционально новому весу порции."""
+    """Пересчитывает нутриенты пропорционально новому весу порции.
+
+    Поля, отмеченные как отредактированные вручную (edit_meal_field),
+    пропускает — иначе кнопки +50г/−50г затирали бы ручной ввод."""
     idx, row = find_meal(meal_id)
     if not idx:
         return None
@@ -130,13 +184,60 @@ def rescale_meal(meal_id, new_weight):
 
     k = new_weight / old
     row = list(row) + [""] * (len(FOOD_HEADERS) - len(row))
+    manual = _manual_fields(row)
     row[M_WEIGHT] = round(new_weight, 1)
-    for col in (M_PROT, M_FAT, M_CARB, M_FIBER):
-        row[col] = round(num(row[col]) * k, 1)
-    row[M_KCAL] = round(num(row[M_KCAL]) * k)
+    for col, key in ((M_PROT, "protein"), (M_FAT, "fat"),
+                     (M_CARB, "carbs"), (M_FIBER, "fiber")):
+        if key not in manual:
+            row[col] = round(num(row[col]) * k, 1)
+    if "calories" not in manual:
+        row[M_KCAL] = round(num(row[M_KCAL]) * k)
 
     try:
-        food_sheet().update(range_name=f"A{idx}:K{idx}",
+        last = col_letter(len(FOOD_HEADERS))
+        food_sheet().update(range_name=f"A{idx}:{last}{idx}",
+                            values=[row[:len(FOOD_HEADERS)]])
+    except Exception:
+        return None
+    return row
+
+
+EDITABLE_FIELDS = {
+    "dish": "Название",
+    "protein": "Белки",
+    "fat": "Жиры",
+    "carbs": "Углеводы",
+    "fiber": "Клетчатка",
+    "calories": "Калории",
+}
+
+
+def edit_meal_field(meal_id, field_key, value):
+    """Правит одно поле записи вручную и помечает его в «Ручные поля» —
+    rescale_meal больше не будет его трогать при пересчёте по весу."""
+    if field_key not in EDITABLE_FIELDS:
+        return None
+    idx, row = find_meal(meal_id)
+    if not idx:
+        return None
+    row = list(row) + [""] * (len(FOOD_HEADERS) - len(row))
+
+    col = {"dish": M_DISH, "protein": M_PROT, "fat": M_FAT,
+           "carbs": M_CARB, "fiber": M_FIBER, "calories": M_KCAL}[field_key]
+    if field_key == "dish":
+        row[col] = str(value).strip()
+    elif field_key == "calories":
+        row[col] = round(num(value))
+    else:
+        row[col] = round(num(value), 1)
+
+    manual = _manual_fields(row)
+    manual.add(field_key)
+    row[M_MANUAL] = ",".join(sorted(manual))
+
+    try:
+        last = col_letter(len(FOOD_HEADERS))
+        food_sheet().update(range_name=f"A{idx}:{last}{idx}",
                             values=[row[:len(FOOD_HEADERS)]])
     except Exception:
         return None
@@ -160,7 +261,7 @@ def read_favourites():
     if not ws:
         return []
     try:
-        return [r for r in ws.get_all_values()[1:] if r and r[0]]
+        return [r for r in ws.get_all_values()[1:] if r and r[F_ID]]
     except Exception:
         return []
 
@@ -172,9 +273,9 @@ def add_favourite(row):
         return None
     dish = row[M_DISH]
     try:
-        for existing in ws.get_all_values():
-            if len(existing) > 1 and existing[1] == dish:
-                return existing[0]
+        for existing in ws.get_all_values()[1:]:
+            if len(existing) > F_DISH and existing[F_DISH] == dish:
+                return existing[F_ID]
         fav_id = "f" + datetime.now().strftime("%y%m%d%H%M%S%f")
         ws.append_row([fav_id, dish, row[M_WEIGHT], row[M_INGR], row[M_PROT],
                        row[M_FAT], row[M_CARB], row[M_FIBER], row[M_KCAL], 1],
@@ -189,7 +290,7 @@ def maybe_autofavourite(dish, rows):
     count = sum(1 for r in rows if len(r) > M_DISH and r[M_DISH] == dish)
     if count < FAV_AUTO_AFTER:
         return False
-    if any(len(f) > 1 and f[1] == dish for f in read_favourites()):
+    if any(len(f) > F_DISH and f[F_DISH] == dish for f in read_favourites()):
         return False
     for r in reversed(rows):
         if len(r) > M_DISH and r[M_DISH] == dish:
@@ -199,13 +300,16 @@ def maybe_autofavourite(dish, rows):
 
 def meal_from_favourite(fav_id):
     for f in read_favourites():
-        if f[0] == fav_id:
+        if f[F_ID] == fav_id:
             return [
                 new_meal_id(),
                 datetime.now().strftime("%Y-%m-%d %H:%M:%S"),
-                f[1], num(f[2]), f[3] if len(f) > 3 else "",
-                num(f[4]), num(f[5]), num(f[6]), num(f[7]), num(f[8]),
+                f[F_DISH], num(f[F_WEIGHT]),
+                f[F_INGR] if len(f) > F_INGR else "",
+                num(f[F_PROT]), num(f[F_FAT]), num(f[F_CARB]),
+                num(f[F_FIBER]), num(f[F_KCAL]),
                 "избранное",
+                "",  # Ручные поля
             ]
     return None
 
@@ -217,17 +321,24 @@ def bump_favourite(fav_id):
         return
     try:
         for idx, row in enumerate(ws.get_all_values(), start=1):
-            if row and row[0] == fav_id:
-                used = num(row[9]) if len(row) > 9 else 0
-                ws.update_cell(idx, 10, int(used) + 1)
+            if row and len(row) > F_ID and row[F_ID] == fav_id:
+                used = num(row[F_USED]) if len(row) > F_USED else 0
+                ws.update_cell(idx, F_USED + 1, int(used) + 1)
                 return
     except Exception:
         pass
 
 
 # ----------------- ОФОРМЛЕНИЕ -----------------
-def format_meal_card(row, day):
+def _targets(targets):
+    """Цели по умолчанию, если вызывающий не передал персональные (per-user,
+    из «Настройки»)."""
+    return targets or {"protein": DAILY_PROTEIN_TARGET, "calories": DAILY_CALORIE_TARGET}
+
+
+def format_meal_card(row, day, targets=None):
     """Карточка только что записанного приёма пищи."""
+    tgt = _targets(targets)
     weight = num(row[M_WEIGHT])
     head = html.escape(str(row[M_DISH]))
     if weight:
@@ -241,20 +352,21 @@ def format_meal_card(row, day):
         f"Калории   {num(row[M_KCAL]):>6.0f}",
         "",
         "ЗА СЕГОДНЯ",
-        f"Белок    {day['protein']:.0f} / {DAILY_PROTEIN_TARGET} г",
-        progress_bar(day["protein"], DAILY_PROTEIN_TARGET),
-        f"Калории  {day['kcal']:.0f} / {DAILY_CALORIE_TARGET}",
-        progress_bar(day["kcal"], DAILY_CALORIE_TARGET),
+        f"Белок    {day['protein']:.0f} / {tgt['protein']:g} г",
+        progress_bar(day["protein"], tgt["protein"]),
+        f"Калории  {day['kcal']:.0f} / {tgt['calories']:g}",
+        progress_bar(day["kcal"], tgt["calories"]),
     ]
     ingr = row[M_INGR]
     tail = f"\n<i>{html.escape(cut(str(ingr), 200))}</i>" if ingr else ""
     return f"✅ <b>{head}</b>\n<pre>{html.escape(chr(10).join(block))}</pre>{tail}"
 
 
-def format_day(rows):
+def format_day(rows, targets=None):
     if not rows:
         return "🍽 <b>Сегодня</b>\n\nЗаписей пока нет."
 
+    tgt = _targets(targets)
     day = totals(rows)
     lines = []
     for r in rows:
@@ -264,17 +376,18 @@ def format_day(rows):
         lines.append(f"        Б {num(r[M_PROT]):.0f}  К {num(r[M_KCAL]):.0f}")
 
     lines += ["", "ИТОГО",
-              f"Белок    {day['protein']:.0f} / {DAILY_PROTEIN_TARGET} г",
-              progress_bar(day["protein"], DAILY_PROTEIN_TARGET),
-              f"Калории  {day['kcal']:.0f} / {DAILY_CALORIE_TARGET}",
-              progress_bar(day["kcal"], DAILY_CALORIE_TARGET),
+              f"Белок    {day['protein']:.0f} / {tgt['protein']:g} г",
+              progress_bar(day["protein"], tgt["protein"]),
+              f"Калории  {day['kcal']:.0f} / {tgt['calories']:g}",
+              progress_bar(day["kcal"], tgt["calories"]),
               f"Ж {day['fat']:.0f} г · У {day['carbs']:.0f} г · "
               f"Клетчатка {day['fiber']:.0f} г"]
     return f"🍽 <b>Сегодня</b>\n<pre>{html.escape(chr(10).join(lines))}</pre>"
 
 
-def format_week(rows):
+def format_week(rows, targets=None):
     """Сводка за 7 дней: средние за день и сколько дней цель закрыта."""
+    tgt = _targets(targets)
     by_day = {}
     for r in rows:
         if len(r) > M_KCAL and r[M_DATE]:
@@ -285,12 +398,12 @@ def format_week(rows):
     days = sorted(by_day)[-7:]
     lines, prot_ok, kcal_sum, prot_sum = [], 0, 0.0, 0.0
     for d in days:
-        t = totals(by_day[d])
-        prot_sum += t["protein"]
-        kcal_sum += t["kcal"]
-        if t["protein"] >= DAILY_PROTEIN_TARGET:
+        day_totals = totals(by_day[d])
+        prot_sum += day_totals["protein"]
+        kcal_sum += day_totals["kcal"]
+        if day_totals["protein"] >= tgt["protein"]:
             prot_ok += 1
-        lines.append(f"{d[8:10]}.{d[5:7]}  Б {t['protein']:>5.0f}  К {t['kcal']:>5.0f}")
+        lines.append(f"{d[8:10]}.{d[5:7]}  Б {day_totals['protein']:>5.0f}  К {day_totals['kcal']:>5.0f}")
 
     n = len(days)
     lines += ["", f"Среднее за день:  Б {prot_sum / n:.0f} г · К {kcal_sum / n:.0f}",
@@ -302,6 +415,6 @@ def format_favourites(favs):
     if not favs:
         return ("⭐ <b>Избранное</b>\n\nПусто. Блюдо попадёт сюда по кнопке "
                 f"или после {FAV_AUTO_AFTER} повторов.")
-    lines = [f"{cut(str(f[1]), 26)}  Б {num(f[4]):.0f}  К {num(f[8]):.0f}"
+    lines = [f"{cut(str(f[F_DISH]), 26)}  Б {num(f[F_PROT]):.0f}  К {num(f[F_KCAL]):.0f}"
              for f in favs]
     return f"⭐ <b>Избранное</b>\n<pre>{html.escape(chr(10).join(lines))}</pre>"
