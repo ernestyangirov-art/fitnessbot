@@ -1,0 +1,15 @@
+name: Keep-alive
+
+on:
+  schedule:
+    - cron: '*/5 * * * *'
+  workflow_dispatch:
+
+jobs:
+  ping:
+    runs-on: ubuntu-latest
+    steps:
+      - name: Пинговать /healthz
+        run: |
+          curl -s -o /dev/null -w "HTTP %{http_code}\n" --max-time 30 \
+            "${{ secrets.BOT_URL }}/healthz" || true
