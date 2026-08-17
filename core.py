@@ -127,7 +127,10 @@ def open_sheet(title, headers=None, cols=10):
             missing = [h for h in headers if h not in current]
             if missing:
                 start = len(current) + 1
-                ws.update(range_name=f"{col_letter(start)}1:{col_letter(start + len(missing) - 1)}1",
+                end = start + len(missing) - 1
+                if ws.col_count < end:
+                    ws.resize(cols=end)
+                ws.update(range_name=f"{col_letter(start)}1:{col_letter(end)}1",
                          values=[missing])
         except Exception:
             pass
