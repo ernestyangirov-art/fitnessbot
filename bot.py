@@ -24,6 +24,7 @@ from PIL import Image
 
 import analytics
 import food
+import weight
 from core import (DAILY_PROTEIN_TARGET, TELEGRAM_BOT_TOKEN, ask_gemini_json,
                   get_user_config, load_settings, num, update_user_config)
 from google.genai import types as genai_types
@@ -37,6 +38,10 @@ CRON_TOKEN = os.getenv("CRON_TOKEN", "")
 
 
 class EditWeight(StatesGroup):
+    waiting = State()
+
+
+class BodyWeight(StatesGroup):
     waiting = State()
 
 
@@ -109,14 +114,15 @@ SPLIT_PROGRAM = {
 
 
 # ----------------- КЛАВИАТУРЫ -----------------
-MENU_BUTTONS = ("🏋️ Тренировка дня", "📊 Аналитика", "🍽 Дневник еды", "⚙️ Настройки")
+MENU_BUTTONS = ("🏋️ Тренировка дня", "📊 Аналитика", "🍽 Дневник еды", "⚖️ Вес", "⚙️ Настройки")
 
 
 def get_main_keyboard():
     return ReplyKeyboardMarkup(
         keyboard=[
             [KeyboardButton(text="🏋️ Тренировка дня"), KeyboardButton(text="📊 Аналитика")],
-            [KeyboardButton(text="🍽 Дневник еды"), KeyboardButton(text="⚙️ Настройки")],
+            [KeyboardButton(text="🍽 Дневник еды"), KeyboardButton(text="⚖️ Вес")],
+            [KeyboardButton(text="⚙️ Настройки")],
         ],
         resize_keyboard=True,
     )
@@ -133,11 +139,14 @@ def get_settings_keyboard(chat_id):
     cfg = get_user_config(chat_id)
     m_status = "✅ Вкл" if cfg.get("morning_notify", True) else "❌ Выкл"
     c_status = "✅ Вкл" if cfg.get("casein_notify", True) else "❌ Выкл"
+    w_status = "✅ Вкл" if cfg.get("weight_notify", True) else "❌ Выкл"
     return InlineKeyboardMarkup(inline_keyboard=[
         [InlineKeyboardButton(text=f"🌅 Утренний сплит (06:00): {m_status}",
                               callback_data="toggle_morning")],
         [InlineKeyboardButton(text=f"🥛 Казеин (21:00): {c_status}",
                               callback_data="toggle_casein")],
+        [InlineKeyboardButton(text=f"⚖️ Напоминание о взвешивании: {w_status}",
+                              callback_data="toggle_weight")],
         [InlineKeyboardButton(text="🔔 Тест утреннего пуша",
                               callback_data="test_morning_push")],
         [InlineKeyboardButton(text="🔔 Тест казеинового пуша",
@@ -231,9 +240,23 @@ async def send_casein_reminder():
                 pass
 
 
+async def send_weight_reminder():
+    settings = await asyncio.to_thread(load_settings, True)
+    msg = ("⚖️ <b>Утренний замер</b>\n\n"
+           "Взвесься натощак и пришли число через «⚖️ Вес» — вес нужен "
+           "для корректных расчётов по упражнениям с весом тела.")
+    for cid, cfg in settings.items():
+        if cfg.get("weight_notify", True):
+            try:
+                await bot.send_message(chat_id=int(cid), text=msg, parse_mode="HTML")
+            except Exception:
+                pass
+
+
 CRON_JOBS = {
     "morning": send_morning_split,
     "casein": send_casein_reminder,
+    "weight": send_weight_reminder,
 }
 
 
@@ -306,10 +329,17 @@ async def show_settings(message: types.Message):
                          reply_markup=keyboard)
 
 
+TOGGLE_KEYS = {
+    "toggle_morning": "morning_notify",
+    "toggle_casein": "casein_notify",
+    "toggle_weight": "weight_notify",
+}
+
+
 @dp.callback_query(F.data.startswith("toggle_"))
 async def handle_toggle(cb: CallbackQuery):
     cfg = await asyncio.to_thread(get_user_config, cb.message.chat.id)
-    key = "morning_notify" if cb.data == "toggle_morning" else "casein_notify"
+    key = TOGGLE_KEYS[cb.data]
     await asyncio.to_thread(update_user_config, cb.message.chat.id, key,
                             not cfg.get(key, True))
     keyboard = await asyncio.to_thread(get_settings_keyboard, cb.message.chat.id)
@@ -457,6 +487,41 @@ async def set_weight(message: types.Message, state: FSMContext):
         await message.answer("Не удалось пересчитать — запись не найдена.")
         return
     await send_meal_card(message, updated)
+
+
+# ----------------- ВЕС ТЕЛА -----------------
+@dp.message(F.text == "⚖️ Вес")
+@dp.message(Command("weight"))
+async def show_weight(message: types.Message, state: FSMContext):
+    text = await asyncio.to_thread(weight.format_weight)
+    await message.answer(text, parse_mode="HTML")
+    await state.set_state(BodyWeight.waiting)
+    await message.answer("Пришли текущий вес в кг, например 84.5. Отмена — /cancel")
+
+
+@dp.message(Command("cancel"), StateFilter(BodyWeight.waiting))
+async def cancel_body_weight(message: types.Message, state: FSMContext):
+    await state.clear()
+    await message.answer("Отменено.")
+
+
+@dp.message(StateFilter(BodyWeight.waiting))
+async def set_body_weight(message: types.Message, state: FSMContext):
+    kg = num((message.text or "").replace("кг", ""))
+    if not (weight.MIN_WEIGHT <= kg <= weight.MAX_WEIGHT):
+        await message.answer(
+            f"Нужно число от {weight.MIN_WEIGHT:g} до {weight.MAX_WEIGHT:g} кг. "
+            "Например: 84.5"
+        )
+        return
+
+    await state.clear()
+    ok = await asyncio.to_thread(weight.save_weight, kg)
+    if not ok:
+        await message.answer("Не удалось сохранить вес.")
+        return
+    text = await asyncio.to_thread(weight.format_weight)
+    await message.answer(text, parse_mode="HTML")
 
 
 # ----------------- РАСПОЗНАВАНИЕ ЕДЫ -----------------

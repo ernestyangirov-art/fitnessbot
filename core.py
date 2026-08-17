@@ -115,8 +115,8 @@ def ask_gemini_json(parts):
 
 # ----------------- НАСТРОЙКИ ПОЛЬЗОВАТЕЛЯ -----------------
 # Диск на Render эфемерный, поэтому настройки живут в таблице.
-SETTINGS_HEADERS = ["chat_id", "morning_notify", "casein_notify"]
-DEFAULT_CONFIG = {"morning_notify": True, "casein_notify": True}
+SETTINGS_HEADERS = ["chat_id", "morning_notify", "casein_notify", "weight_notify"]
+DEFAULT_CONFIG = {"morning_notify": True, "casein_notify": True, "weight_notify": True}
 
 _settings_cache = None
 
@@ -143,6 +143,7 @@ def load_settings(force=False):
                     result[str(row[0])] = {
                         "morning_notify": _parse_flag(row[1]) if len(row) > 1 else True,
                         "casein_notify": _parse_flag(row[2]) if len(row) > 2 else True,
+                        "weight_notify": _parse_flag(row[3]) if len(row) > 3 else True,
                     }
         except Exception:
             pass
@@ -154,11 +155,12 @@ def _persist_user(cid, cfg):
     ws = settings_sheet()
     if not ws:
         return
-    row = [cid, str(cfg["morning_notify"]).upper(), str(cfg["casein_notify"]).upper()]
+    row = [cid, str(cfg["morning_notify"]).upper(), str(cfg["casein_notify"]).upper(),
+           str(cfg["weight_notify"]).upper()]
     try:
         for idx, existing in enumerate(ws.get_all_values(), start=1):
             if existing and existing[0] == cid:
-                ws.update(range_name=f"A{idx}:C{idx}", values=[row])
+                ws.update(range_name=f"A{idx}:D{idx}", values=[row])
                 return
         ws.append_row(row)
     except Exception:
