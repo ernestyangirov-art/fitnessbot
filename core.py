@@ -15,7 +15,7 @@ load_dotenv()
 TELEGRAM_BOT_TOKEN = os.getenv("BOT_TOKEN")
 GEMINI_API_KEY = os.getenv("GEMINI_API_KEY")
 GEMINI_MODEL = os.getenv("GEMINI_MODEL", "gemini-3.6-flash")
-SPREADSHEET_ID = os.getenv("SPREADSHEET_ID", "1TcDkwfY1R0wrvQQ6PdETSOIzVOvCmjJs4YWvkS-Gkb0")
+SPREADSHEET_ID = os.getenv("SPREADSHEET_ID")
 
 DAILY_PROTEIN_TARGET = 150   # г
 DAILY_CALORIE_TARGET = 2300  # ккал
@@ -30,6 +30,8 @@ SCOPES = ["https://www.googleapis.com/auth/spreadsheets"]
 
 if not TELEGRAM_BOT_TOKEN:
     raise ValueError("BOT_TOKEN не задан!")
+if not SPREADSHEET_ID:
+    raise ValueError("SPREADSHEET_ID не задан!")
 
 gemini = genai.Client(api_key=GEMINI_API_KEY) if GEMINI_API_KEY else None
 
