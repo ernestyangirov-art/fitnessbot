@@ -20,8 +20,7 @@ from aiogram.types import (
     ReplyKeyboardMarkup,
 )
 from aiohttp import web
-from apscheduler.schedulers.asyncio import AsyncIOScheduler
-from apscheduler.triggers.cron import CronTrigger
+
 from PIL import Image
 
 import analytics
@@ -32,7 +31,10 @@ from google.genai import types as genai_types
 
 bot = Bot(token=TELEGRAM_BOT_TOKEN)
 dp = Dispatcher(storage=MemoryStorage())
-scheduler = AsyncIOScheduler(timezone="Europe/Kyiv")
+
+# Пуши приходят снаружи: GitHub Actions дёргает /cron/<имя> по расписанию.
+# Внутренний планировщик на бесплатном Render не работает — сервис засыпает.
+CRON_TOKEN = os.getenv("CRON_TOKEN", "")
 
 
 class EditWeight(StatesGroup):
@@ -173,10 +175,27 @@ async def handle_ping(request):
     return web.Response(text="Bot is running!")
 
 
+async def handle_cron(request):
+    """Точка входа для GitHub Actions: /cron/morning, /cron/casein."""
+    if not CRON_TOKEN or request.headers.get("X-Cron-Token") != CRON_TOKEN:
+        return web.Response(status=403, text="forbidden")
+
+    job = CRON_JOBS.get(request.match_info.get("name", ""))
+    if not job:
+        return web.Response(status=404, text="unknown job")
+
+    try:
+        await job()
+    except Exception as e:
+        return web.Response(status=500, text=f"failed: {e}")
+    return web.Response(text="ok")
+
+
 async def start_web_server():
     app = web.Application()
     app.router.add_get("/", handle_ping)
     app.router.add_get("/healthz", handle_ping)
+    app.router.add_get("/cron/{name}", handle_cron)
     runner = web.AppRunner(app)
     await runner.setup()
     port = int(os.environ.get("PORT", 10000))
@@ -212,7 +231,10 @@ async def send_casein_reminder():
             except Exception:
                 pass
 
-
+CRON_JOBS = {
+    "morning": send_morning_split,
+    "casein": send_casein_reminder,
+}
 # ----------------- ОБЩИЕ ХЕНДЛЕРЫ -----------------
 @dp.message(Command("start"))
 async def cmd_start(message: types.Message):
@@ -494,14 +516,6 @@ async def handle_food_photo(message: types.Message):
 # ----------------- ЗАПУСК -----------------
 async def main():
     await start_web_server()
-
-    scheduler.add_job(send_morning_split, CronTrigger(hour=6, minute=0))
-    scheduler.add_job(send_casein_reminder, CronTrigger(hour=21, minute=0))
-    scheduler.start()
-
     print("Бот готов к работе!")
+
     await dp.start_polling(bot)
-
-
-if __name__ == "__main__":
-    asyncio.run(main())
