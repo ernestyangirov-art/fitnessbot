@@ -12,19 +12,21 @@ from core import (ANALYSIS_SHEET, TRAINING_SHEET, ask_gemini_text, bar, cut,
 # никогда не создаёт и не правит — только требует ровно эти заголовки,
 # перестановка/пропажа колонки там падает явной ошибкой, а не читает не то.
 TRAINING_HEADERS = [
-    "Дата и время", "Сплит", "Упражнение", "ex_id", "Вес (кг)", "Повторы",
+    "Дата и время", "Программа", "Сплит", "Упражнение", "ex_id", "Вес (кг)", "Повторы",
     "Тоннаж внешний (кг)", "Расчётный 1ПМ (кг)", "Тяжесть (1-5)",
 ]
-COL_DATE = COL_SPLIT = COL_EXERCISE = COL_EX_ID = None
+
+COL_DATE = COL_PROGRAM = COL_SPLIT = COL_EXERCISE = COL_EX_ID = None
 COL_WEIGHT = COL_REPS = None
 COL_VOLUME = COL_ORM = COL_HARD = None
 
 
 def _resolve_training_columns(header_row):
-    global COL_DATE, COL_SPLIT, COL_EXERCISE, COL_EX_ID
+    global COL_DATE, COL_PROGRAM, COL_SPLIT, COL_EXERCISE, COL_EX_ID
     global COL_WEIGHT, COL_REPS, COL_VOLUME, COL_ORM, COL_HARD
     idx = header_index(header_row, TRAINING_HEADERS, TRAINING_SHEET)
     COL_DATE = idx["Дата и время"]
+    COL_PROGRAM = idx["Программа"]
     COL_SPLIT = idx["Сплит"]
     COL_EXERCISE = idx["Упражнение"]
     COL_EX_ID = idx["ex_id"]
