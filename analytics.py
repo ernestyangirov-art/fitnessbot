@@ -119,6 +119,71 @@ def best_orm_before(sessions, order):
                 best[r[COL_EXERCISE]] = orm
     return best
 
+def predict_splits(rows, n=3, recency_days=10):
+    """Сплиты-кандидаты на следующую тренировку.
+
+    Кандидаты ограничены той же "Программой", что в самой свежей
+    сессии — смена программы в GymUp не тянет за собой сплиты из
+    прошлой программы. Внутри программы предпочитает сплиты, не
+    тренированные recency_days+ дней; если таких нет — просто самые
+    давние из кандидатов текущей программы.
+    """
+    sessions = group_sessions(rows)
+    if not sessions:
+        return []
+
+    order = sorted(sessions)
+    last_key = order[-1]
+    current_program = sessions[last_key][0][COL_PROGRAM] or ""
+
+    last_seen = {}
+    for key in order:
+        row0 = sessions[key][0]
+        if (row0[COL_PROGRAM] or "") != current_program:
+            continue
+        split = row0[COL_SPLIT] or "Тренировка"
+        last_seen[split] = key  # order по возрастанию даты — последнее значение самое свежее
+
+    if not last_seen:
+        return []
+
+    ranked = sorted(last_seen.items(), key=lambda kv: kv[1])  # от самой старой к свежей
+
+    try:
+        last_dt = datetime.strptime(last_key[:10], "%Y-%m-%d")
+        stale = [name for name, key in ranked
+                 if (last_dt - datetime.strptime(key[:10], "%Y-%m-%d")).days >= recency_days]
+    except ValueError:
+        stale = []
+
+    pool = stale if stale else [name for name, _ in ranked]
+    return pool[:n]
+
+
+def session_exercise_list(rows, split_name):
+    """Упражнения самой свежей сессии с этим сплитом, в порядке появления.
+
+    Возвращает [(упражнение, ["вес×повторы", ...]), ...] либо [].
+    """
+    sessions = group_sessions(rows)
+    matching = [key for key in sessions
+                if (sessions[key][0][COL_SPLIT] or "Тренировка") == split_name]
+    if not matching:
+        return []
+
+    last_key = max(matching)
+    order_seen = []
+    by_name = {}
+    for r in sessions[last_key]:
+        name = r[COL_EXERCISE]
+        if name not in by_name:
+            by_name[name] = []
+            order_seen.append(name)
+        w = num(r[COL_WEIGHT])
+        reps = int(num(r[COL_REPS]))
+        by_name[name].append(f"{w:g}×{reps}" if w > 0 else f"св.вес×{reps}")
+
+    return [(name, by_name[name]) for name in order_seen]
 
 def build_analytics(rows):
     """Блок с цифрами и шкалами. Без сетевых вызовов."""
