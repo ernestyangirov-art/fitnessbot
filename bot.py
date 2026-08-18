@@ -279,26 +279,75 @@ async def cmd_start(message: types.Message):
     )
 
 
+def workout_keyboard(splits, shown_index):
+    from core import cut
+    buttons = [
+        InlineKeyboardButton(text=cut(name, 24), callback_data=f"workout:pick:{i}")
+        for i, name in enumerate(splits) if i != shown_index
+    ]
+    return InlineKeyboardMarkup(inline_keyboard=[[b] for b in buttons]) if buttons else None
+
+
+async def send_workout_card(target, rows, splits, shown_index):
+    split_name = splits[shown_index]
+    exercises = await asyncio.to_thread(analytics.session_exercise_list, rows, split_name)
+
+    await target.answer(f"🏋️ <b>ПЛАН: {html.escape(split_name)}</b>",
+                        parse_mode="HTML",
+                        reply_markup=workout_keyboard(splits, shown_index))
+
+    if not exercises:
+        await target.answer("Для этого сплита ещё нет синхронизированных тренировок.")
+        return
+
+    for name, sets in exercises:
+        last = ", ".join(sets)
+        cue = EXERCISE_CUES.get(name)
+        if cue:
+            card = (
+                f"🏋️ <b>{html.escape(name)}</b>\n"
+                f"📊 Последний раз: <code>{html.escape(last)}</code>\n\n"
+                f"📐 <b>Настройка:</b>\n{html.escape(cue['setup'])}\n\n"
+                f"🎯 <b>Биомеханика:</b>\n{html.escape(cue['execution'])}\n\n"
+                f"⚠️ <b>Ошибка:</b>\n{html.escape(cue['mistake'])}"
+            )
+            try:
+                await target.answer_animation(animation=cue["media"], caption=card, parse_mode="HTML")
+            except Exception:
+                await target.answer(card, parse_mode="HTML")
+        else:
+            card = (f"🏋️ <b>{html.escape(name)}</b>\n"
+                    f"Последний раз: <code>{html.escape(last)}</code>")
+            await target.answer(card, parse_mode="HTML")
+
+
 @dp.message(F.text == "🏋️ Тренировка дня")
 @dp.message(Command("workout"))
 async def show_workout(message: types.Message):
-    split = SPLIT_PROGRAM[["day_a", "day_b", "day_c"][datetime.now().day % 3]]
-    await message.answer(f"📋 <b>ПЛАН: {html.escape(split['title'])}</b>",
-                         parse_mode="HTML")
+    rows = await asyncio.to_thread(analytics.read_training_rows)
+    if not rows:
+        await message.answer("Лист «Тренировки» пуст. Дождись синхронизации GymUp.")
+        return
+    splits = await asyncio.to_thread(analytics.predict_splits, rows, 4)
+    if not splits:
+        await message.answer("Не нашёл ни одной тренировки для текущей программы.")
+        return
+    await send_workout_card(message, rows, splits, 0)
 
-    for ex in split["exercises"]:
-        card = (
-            f"🏋️ <b>{html.escape(ex['name'])}</b>\n"
-            f"📊 Схема: <code>{html.escape(ex['sets'])}</code>\n\n"
-            f"📐 <b>Настройка:</b>\n{html.escape(ex['setup'])}\n\n"
-            f"🎯 <b>Биомеханика:</b>\n{html.escape(ex['execution'])}\n\n"
-            f"⚠️ <b>Ошибка:</b>\n{html.escape(ex['mistake'])}"
-        )
-        try:
-            await message.answer_animation(animation=ex["media"], caption=card,
-                                           parse_mode="HTML")
-        except Exception:
-            await message.answer(card, parse_mode="HTML")
+
+@dp.callback_query(F.data.startswith("workout:pick:"))
+async def handle_workout_pick(cb: CallbackQuery):
+    idx = int(cb.data.split(":")[2])
+    rows = await asyncio.to_thread(analytics.read_training_rows)
+    if not rows:
+        await cb.answer("Нет данных")
+        return
+    splits = await asyncio.to_thread(analytics.predict_splits, rows, 4)
+    if idx >= len(splits):
+        await cb.answer("Уже неактуально")
+        return
+    await send_workout_card(cb.message, rows, splits, idx)
+    await cb.answer()
 
 
 @dp.message(F.text == "📊 Аналитика")
