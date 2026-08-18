@@ -217,13 +217,18 @@ async def start_web_server():
 # ----------------- НАПОМИНАНИЯ -----------------
 async def send_morning_split():
     settings = await asyncio.to_thread(load_settings, True)
-    split = SPLIT_PROGRAM[["day_a", "day_b", "day_c"][datetime.now().day % 3]]
+    rows = await asyncio.to_thread(analytics.read_training_rows)
+    splits = await asyncio.to_thread(analytics.predict_splits, rows, 1) if rows else []
+    split_name = splits[0] if splits else None
+
     for cid, cfg in settings.items():
         if cfg.get("morning_notify", True):
             protein = cfg.get("daily_protein_target", DAILY_PROTEIN_TARGET)
+            plan_line = (f"🎯 Сегодня по плану: <b>{html.escape(split_name)}</b>\n"
+                         if split_name else "")
             msg = (
                 f"🌅 <b>Утренняя сводка</b>\n\n"
-                f"🎯 Сегодня по плану: <b>{html.escape(split['title'])}</b>\n"
+                f"{plan_line}"
                 f"🥩 Цель по белку: <b>{protein:g} г</b>\n\n"
                 f"Нажми «🏋️ Тренировка дня» для карточек с биомеханикой."
             )
